@@ -2,14 +2,14 @@
 #include <EEPROM.h>
 #include "BluetoothSerial.h"
 
-// --- Pin Definitions ---
-#define VBAT        25
-#define BUZZER      12   // ต่อผ่าน Transistor ขับ LED หรือ Buzzer
-#define BRAKE       4   // สายสีเขียวของมอเตอร์ 3640
-#define DIR1        16    // สายสีเหลือง
-#define PWM1        17   // สายสีขาว
-#define ENC_FG      19   // สายสีน้ำเงิน (FG) ต่อ Pull-up 10k + Cap 0.1uF
-#define INT_LED     2
+// --- Pin Definitions (การต่อสาย) ---
+#define VBAT        25   // อ่านไฟแบต
+#define BUZZER      12   // ลำโพง/ไฟเตือน
+#define BRAKE       4    // สายเบรกมอเตอร์
+#define DIR1        16   // ทิศทางมอเตอร์
+#define PWM1        17   // ความเร็วมอเตอร์
+#define ENC_FG      19   // พัลส์เช็คความเร็วรอบ
+#define INT_LED     2    // ไฟบนบอร์ด
 
 // --- Motor PWM Settings ---
 #define PWM1_CH     1
@@ -24,8 +24,8 @@
 
 #define EEPROM_SIZE   64
 
-// --- Variables ---
-float vDividerRatio = 278; // ปรับตามมัลติมิเตอร์สำหรับ R 33k/10k
+// --- Variables (ตัวแปรระบบ) ---
+float vDividerRatio = 278; 
 float Gyro_amount = 0.92;
 float alpha = 0.7;
 
@@ -33,11 +33,11 @@ bool vertical_edge = false;
 bool calibrating = false;
 bool calibrated = false;
 
-// PID Gains สำหรับ 1 แกน (มวล 1kg)
-float eK1 = 200;
-float eK2 = 40.00; 
-float eK3 = 4;
-float eK4 = 0.02;
+// PID Gains (ค่าจูนความนิ่ง)
+float eK1 = 200;    // มุม
+float eK2 = 40.00;  // ความเร็วล้ม
+float eK3 = 4;      // ความเร็วมอเตอร์
+float eK4 = 0.02;   // ตำแหน่งสะสม
 
 int loop_time = 15;
 unsigned long currentT, previousT_1, previousT_2;
@@ -48,7 +48,7 @@ struct OffsetsObj {
 };
 OffsetsObj offsets;
 
-int16_t AcX, AcY, AcZ, AcXc, AcYc, AcZc, GyX, GyY, GyZ;
+int16_t AcX, AcY, AcZ, GyX, GyY, GyZ;
 float gyroX, gyroXfilt, robot_angleX, Acc_angleX;
 volatile int enc_count1 = 0;
 int16_t motor1_speed;
@@ -56,9 +56,8 @@ int32_t motors_speed_X;
 
 BluetoothSerial SerialBT;
 
-// --- Interrupt Service Routine สำหรับ FG ---
+// --- Interrupt: นับรอบมอเตอร์ ---
 void IRAM_ATTR ENC1_READ() {
-  // สาย FG ของ 3640 ส่งพัลส์ตามความเร็ว
   enc_count1++; 
 }
 
@@ -70,9 +69,8 @@ void setup() {
   pinMode(BUZZER, OUTPUT);
   pinMode(BRAKE, OUTPUT);
   pinMode(VBAT, INPUT);
-  digitalWrite(BRAKE, HIGH); // ปลดเบรกเพื่อให้มอเตอร์หมุนได้
+  digitalWrite(BRAKE, HIGH); 
 
-  // Motor 1 Setup
   pinMode(DIR1, OUTPUT);
   pinMode(ENC_FG, INPUT);
   attachInterrupt(ENC_FG, ENC1_READ, RISING);
@@ -84,90 +82,73 @@ void setup() {
   if (offsets.ID == 96) calibrated = true;
 
   angle_setup();
-  beep(); // พร้อมทำงาน
+  beep(); 
 }
-
-
-unsigned long lastReportBT = 0;
-int last_pwm_X = 0; // เก็บค่าไว้รายงาน
 
 void loop() {
   currentT = millis();
 
-  // 1. ลูปควบคุมหลัก (ทุก 15ms)
+  // 1. ลูปควบคุมหลัก (Main Logic)
   if (currentT - previousT_1 >= loop_time) {
     Tuning();
     angle_calc();
 
     motor1_speed = enc_count1;
-    enc_count1 = 0; // Reset count เพื่อหาความเร็วในรอบถัดไป
+    enc_count1 = 0; 
     
     if (vertical_edge && calibrated && !calibrating) {
       digitalWrite(BRAKE, HIGH);
       gyroX = GyX / 131.0;
       gyroXfilt = alpha * gyroX + (1 - alpha) * gyroXfilt;
       
+      // คำนวณแรงที่ต้องส่งให้มอเตอร์ (PID)
       int pwm_X = constrain(eK1 * robot_angleX + eK2 * gyroXfilt + eK3 * motor1_speed + eK4 * motors_speed_X, -255, 255);
-      last_pwm_X = pwm_X;
       motors_speed_X += motor1_speed / 5;
       Motor1_control(pwm_X);
     } else {
       Motor1_control(0);
-      digitalWrite(BRAKE, LOW); // ล็อกเบรกเมื่อไม่ได้ตั้งตรง
+      digitalWrite(BRAKE, LOW); // ล็อกล้อเมื่อล้ม
       motors_speed_X = 0;
     }
     previousT_1 = currentT;
   }
 
-  // 2. ลูปตรวจวัดแบตเตอรี่ (ทุก 2 วินาที)
+  // 2. ลูปเช็คแบตเตอรี่
   if (currentT - previousT_2 >= 2000) {
     checkBattery();
     previousT_2 = currentT;
   }
 }
 
+// --- ฟังก์ชันเสริมต่างๆ ---
+
 void checkBattery() {
   long rawSum = 0;
   for(int i=0; i<10; i++) rawSum += analogRead(VBAT);
   float voltage = (rawSum / 10.0) / vDividerRatio;
 
-  Serial.print("Batt: "); Serial.print(voltage); Serial.println("V");
-  if (SerialBT.connected()) {
-    SerialBT.print("Voltage: "); SerialBT.println(voltage);
-  }
-
-  if (voltage <= 10.5) {           // วิกฤต
-    digitalWrite(BUZZER, HIGH); 
-  } else if (voltage <= 11.1) {    // เตือน
-    digitalWrite(BUZZER, !digitalRead(BUZZER)); // กะพริบ
-  } else {
-    digitalWrite(BUZZER, LOW);
-  }
+  if (voltage <= 10.5) digitalWrite(BUZZER, HIGH); // แบตวิกฤต
+  else if (voltage <= 11.1) digitalWrite(BUZZER, !digitalRead(BUZZER)); // แบตอ่อน
+  else digitalWrite(BUZZER, LOW);
 }
 
 void Motor1_control(int sp) {
-  // สำหรับมวล 1kg มอเตอร์ต้องสั่ง DIR สลับกันได้จริง
-  if (sp < 0) {
-    digitalWrite(DIR1, LOW); // ลองสลับ LOW/HIGH ตรงนี้ดู
-  } else {
-    digitalWrite(DIR1, HIGH);
-  }
+  if (sp < 0) digitalWrite(DIR1, LOW);
+  else digitalWrite(DIR1, HIGH);
 
-  // ปรับ PWM (0-255)
-  // มอเตอร์ 3640 บางรุ่นใช้ 0 คือหยุด บางรุ่นใช้ 255 คือหยุด
   int pwm_val = constrain(abs(sp), 0, 255);
-  ledcWrite(PWM1_CH, 255 - pwm_val); // ถ้าล้อไม่หมุนเลย ลองเปลี่ยนเป็น ledcWrite(PWM1_CH, pwm_val);
+  ledcWrite(PWM1_CH, 255 - pwm_val); 
 }
 
 void angle_setup() {
   Wire.begin();
-  writeTo(MPU6050, PWR_MGMT_1, 0);
+  writeTo(MPU6050, PWR_MGMT_1, 0);   // ปลุก MPU6050
   writeTo(MPU6050, ACCEL_CONFIG, 0); 
-  writeTo(MPU6050, GYRO_CONFIG, 0); 
+  writeTo(MPU6050, GYRO_CONFIG, 0);  
   delay(500);
 }
 
-float angle_offset = 0; // ตัวแปรเก็บค่ามุมตอนตั้งตรง
+float angle_offset = 0; 
 
 void angle_calc() {
   Wire.beginTransmission(MPU6050);
@@ -183,29 +164,20 @@ void angle_calc() {
   GyY = Wire.read() << 8 | Wire.read();
   GyZ = Wire.read() << 8 | Wire.read();
 
-  // 1. คำนวณความเร็วเชิงมุม (Gyro Rate) และหักลบ Offset
-  // หมายเหตุ: GyX_offset ควรหาตอน setup หรือตอนสั่ง c+
   float gyro_rate = (GyX - 0.5) / 65.536; 
-
-  // 2. คำนวณมุมจาก Accel (หักลบ Offset ที่คุณวัดมา)
   float accY = (float)AcY / 16384.0;
   float accZ = (float)AcZ / 16384.0;
   float raw_acc_angle = atan2(accY, -accZ) * 57.2958;
   Acc_angleX = raw_acc_angle - angle_offset;
 
-  // 3. Complementary Filter (ตัวเอกของงาน)
-  // เพิ่มการคูณ DT (Delta Time) ที่แม่นยำ
   float dt = loop_time / 1000.0;
   robot_angleX = Gyro_amount * (robot_angleX + gyro_rate * dt) + (1.0 - Gyro_amount) * Acc_angleX;
 
-  // ตรวจสอบสถานะเพื่อสั่งเริ่มทำงาน
-  if (abs(robot_angleX) < 1.0) { 
-    vertical_edge = true; 
-  } else if (abs(robot_angleX) > 15) {
-    vertical_edge = false;
-  }
+  if (abs(robot_angleX) < 1.0) vertical_edge = true; 
+  else if (abs(robot_angleX) > 15) vertical_edge = false;
 }
 
+// ส่งข้อมูลไปที่ MPU6050
 void writeTo(byte device, byte address, byte value) {
   Wire.beginTransmission(device);
   Wire.write(address);
@@ -213,48 +185,39 @@ void writeTo(byte device, byte address, byte value) {
   Wire.endTransmission(true);
 }
 
+// เสียงปี๊บ
 void beep() {
-  digitalWrite(BUZZER, LOW); delay(100); digitalWrite(BUZZER, LOW);
+  digitalWrite(BUZZER, HIGH); delay(100); digitalWrite(BUZZER, LOW);
 }
 
+// ปรับจูนผ่าน Bluetooth
 void Tuning() {
   if (!SerialBT.available()) return;
-  
   char param = SerialBT.read();
   char cmd = SerialBT.read();
 
-  // ปรับ PID ผ่านมือถือ (1+, 2+, 3+, 4-)
   if (param == '1') { if (cmd == '+') eK1 += 5 ; else if (cmd == '-') eK1 -= 5; }
   if (param == '2') { if (cmd == '+') eK2 += 1; else if (cmd == '-') eK2 -= 1; }
   if (param == '3') { if (cmd == '+') eK3 += 0.1; else if (cmd == '-') eK3 -= 0.1; }
   if (param == '4') { if (cmd == '+') eK4 += 0.001; else if (cmd == '-') eK4 -= 0.001; }
 
-  // --- ระบบ Calibrate เซ็ตศูนย์ ---
   if (param == 'c') {
-    if (cmd == '+') {
-      calibrating = true;
-      beep();
-      SerialBT.println("Setting Zero...");
-    }
+    if (cmd == '+') { calibrating = true; beep(); }
     if (cmd == '-' && calibrating) {
-      // อ่านค่าดิบ ณ วินาทีที่กด c- มาเป็นจุด 0
       float accY = (float)AcY / 16384.0;
       float accZ = (float)AcZ / 16384.0;
       angle_offset = atan2(accY, -accZ) * 57.2958;
-      
-      robot_angleX = 0;    // รีเซ็ตมุมปัจจุบันให้เป็น 0 ทันที
-      motors_speed_X = 0;  // ล้างค่าสะสมมอเตอร์
-      
+      robot_angleX = 0;
+      motors_speed_X = 0;
       calibrated = true;
       calibrating = false;
       beep(); beep();
-      SerialBT.print("Done! Offset: "); SerialBT.println(angle_offset);
     }
   }
-
   if (param == 'v') reportStatus();
 }
 
+// รายงานค่ากลับไปที่ Bluetooth
 void reportStatus() {
   float voltage = (analogRead(VBAT)) / vDividerRatio;
   SerialBT.println("\n--- Settings ---");
@@ -264,5 +227,4 @@ void reportStatus() {
   SerialBT.print(" eK4:"); SerialBT.println(eK4, 4);
   SerialBT.print("Angle:"); SerialBT.print(robot_angleX, 2);
   SerialBT.print(" | Batt:"); SerialBT.print(voltage); SerialBT.println("V");
-  SerialBT.println("----------------");
 }
