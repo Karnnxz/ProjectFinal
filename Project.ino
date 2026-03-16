@@ -1,6 +1,4 @@
 /*
- * Project_DualCore.ino
- * ESP32 Dual-Core Balance Robot (Cube)
  *
  * Core 1 (Arduino default): Control Loop
  *   - อ่านค่า IMU (MPU6050)
